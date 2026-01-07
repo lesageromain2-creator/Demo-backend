@@ -17,9 +17,61 @@ const reservationRoutes = require('./routes/reservations');
 const menusRoutes = require('./routes/menus');
 const dashboardRoutes = require('./routes/dashboard');
 
-
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// ============================================
+// CONFIGURATION CORS (DOIT ÊTRE EN PREMIER)
+// ============================================
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+  : [
+      'http://localhost:3000', 
+      'http://localhost:5173',
+      'https://restaurant-frontend-eta-two.vercel.app',
+      'https://restaurant-frontend-git-main-devros-projects.vercel.app',
+      'https://restaurant-frontend-3krb1t2di-devros-projects.vercel.app'
+    ];
+
+console.log('🌍 Origines autorisées:', allowedOrigins);
+
+app.use(cors({
+  origin: function (origin, callback) {
+    console.log('🔍 Origin reçue:', origin);
+    
+    // Autoriser les requêtes sans origin (Postman, mobile apps, etc.)
+    if (!origin) {
+      console.log('✅ Requête sans origin autorisée');
+      return callback(null, true);
+    }
+    
+    if (allowedOrigins.includes(origin)) {
+      console.log('✅ Origin autorisée:', origin);
+      return callback(null, true);
+    }
+    
+    console.log('❌ Origin refusée:', origin);
+    console.log('📋 Origines disponibles:', allowedOrigins);
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  exposedHeaders: ['Set-Cookie'],
+  maxAge: 86400
+}));
+
+// Gérer explicitement les requêtes OPTIONS (preflight)
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  if (!origin || allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+  res.sendStatus(204);
+});
 
 // ============================================
 // CONFIGURATION POSTGRESQL (SUPABASE)
@@ -82,46 +134,6 @@ const authLimiter = rateLimit({
   message: 'Trop de tentatives de connexion, veuillez réessayer dans 15 minutes.'
 });
 
-
-// ============================================
-// MIDDLEWARE CORS
-// ============================================
-// Configuration CORS améliorée
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
-  : ['http://localhost:3000', 'http://localhost:5173','https://restaurant-frontend-3krb1t2di-devros-projects.vercel.app'];
-
-console.log('🌍 Origines autorisées:', allowedOrigins);
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Autoriser les requêtes sans origin (Postman, mobile apps, etc.)
-    if (!origin) {
-      console.log('✅ Requête sans origin autorisée');
-      return callback(null, true);
-    }
-    
-    if (allowedOrigins.includes(origin)) {
-      console.log('✅ Origin autorisée:', origin);
-      callback(null, true);
-    } else {
-      console.log('❌ Origin refusée:', origin);
-      console.log('📋 Origines autorisées:', allowedOrigins);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
-  exposedHeaders: ['Set-Cookie'],
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-};
-
-app.use(cors(corsOptions));
-
-// Important : Gérer les requêtes OPTIONS explicitement
-app.options('*', cors(corsOptions));
 // ============================================
 // MIDDLEWARE BODY PARSER
 // ============================================
@@ -131,27 +143,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // ============================================
 // CONFIGURATION DES SESSIONS
 // ============================================
-
-const sessionConfig = {
-  store: new pgSession({
-    pool: pool,
-    tableName: 'sessions',
-    createTableIfMissing: false
-  }),
-  secret: process.env.SESSION_SECRET || 'votre-secret-super-securise-changez-moi',
-  resave: false,
-  saveUninitialized: false,
-  name: 'restaurant.sid', // Nom du cookie
-  cookie: {
-    secure: process.env.NODE_ENV === 'production', // true en production (HTTPS)
-    httpOnly: true, // Protection XSS
-    maxAge: 24 * 60 * 60 * 1000, // 24 heures
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // Important pour cross-domain
-  }
-};
-
-
-
 
 app.use(session({
   store: new pgSession({
@@ -172,12 +163,13 @@ app.use(session({
   rolling: true
 }));
 
-// APRÈS LA CONFIGURATION DES SESSIONS, AJOUTER CE DEBUG
+// Middleware de debug des sessions
 app.use((req, res, next) => {
   console.log('🔍 Session Debug:', {
     path: req.path,
+    method: req.method,
+    origin: req.headers.origin,
     sessionID: req.sessionID,
-    session: req.session,
     hasUserId: !!req.session?.userId,
     cookie: req.session?.cookie
   });
@@ -197,25 +189,36 @@ app.use((req, res, next) => {
 });
 
 // ============================================
-// ROUTES
+// ROUTES (SANS PRÉFIXE /api/)
 // ============================================
 
-app.get('/api/health', (req, res) => {
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'API Restaurant - Serveur opérationnel',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'Serveur opérationnel',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
-    session: req.session.userId ? 'active' : 'none'
+    session: req.session.userId ? 'active' : 'none',
+    database: 'connected'
   });
 });
 
-app.use('/api/auth', authLimiter, authRoutes);
-app.use('/api/settings', settingsRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/reservations', reservationRoutes);
-app.use('/api/menus', menusRoutes);
-app.use('/api/dashboard', dashboardRoutes);
+// Routes principales
+app.use('/auth', authLimiter, authRoutes);
+app.use('/settings', settingsRoutes);
+app.use('/users', userRoutes);
+app.use('/reservations', reservationRoutes);
+app.use('/menus', menusRoutes);
+app.use('/dashboard', dashboardRoutes);
 
 // ============================================
 // GESTION DES ERREURS 404
@@ -223,7 +226,20 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use((req, res) => {
   res.status(404).json({ 
     error: 'Route non trouvée',
-    path: req.path 
+    path: req.path,
+    method: req.method,
+    availableRoutes: [
+      'GET /',
+      'GET /health',
+      'POST /auth/login',
+      'POST /auth/logout',
+      'GET /auth/me',
+      'GET /settings',
+      'GET /users',
+      'GET /reservations',
+      'GET /menus',
+      'GET /dashboard'
+    ]
   });
 });
 
@@ -231,7 +247,8 @@ app.use((req, res) => {
 // MIDDLEWARE DE GESTION D'ERREURS GLOBAL
 // ============================================
 app.use((err, req, res, next) => {
-  console.error('❌ Erreur serveur:', err.stack);
+  console.error('❌ Erreur serveur:', err);
+  console.error('Stack:', err.stack);
   
   const errorMessage = process.env.NODE_ENV === 'production' 
     ? 'Erreur serveur interne' 
@@ -239,7 +256,10 @@ app.use((err, req, res, next) => {
   
   res.status(err.status || 500).json({ 
     error: errorMessage,
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    ...(process.env.NODE_ENV === 'development' && { 
+      stack: err.stack,
+      details: err.toString()
+    })
   });
 });
 
@@ -253,6 +273,18 @@ const server = app.listen(PORT, () => {
   console.log(`║  🌍 Environment: ${process.env.NODE_ENV || 'development'}        ║`);
   console.log(`║  🔗 URL: http://localhost:${PORT}       ║`);
   console.log('╚══════════════════════════════════════╝');
+  console.log('');
+  console.log('📋 Routes disponibles:');
+  console.log('  - GET  /');
+  console.log('  - GET  /health');
+  console.log('  - POST /auth/login');
+  console.log('  - POST /auth/logout');
+  console.log('  - GET  /auth/me');
+  console.log('  - GET  /settings');
+  console.log('  - *    /users');
+  console.log('  - *    /reservations');
+  console.log('  - *    /menus');
+  console.log('  - *    /dashboard');
   console.log('');
 });
 
@@ -290,5 +322,3 @@ process.on('uncaughtException', (error) => {
 });
 
 module.exports = app;
-
-
