@@ -30,7 +30,9 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
       'http://localhost:3001', 
       'http://localhost:5173',
       'http://restaurant-frontend-466bzhl3i-devros-projects.vercel.app',
+      'http://restaurant-frontend-git-main-devros-projects.vercel.app',
       'http://restaurant-frontend-eta-two.vercel.app',
+    
      
     ];
 
