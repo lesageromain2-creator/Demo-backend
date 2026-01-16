@@ -1,186 +1,243 @@
 // backend/routes/dishes.js
 const express = require('express');
-//const { query, queryOne } = require('../../database/db');
-
 const router = express.Router();
 
-// Récupérer tous les plats avec filtres
+// GET /dishes - Récupérer tous les plats
 router.get('/', async (req, res) => {
   try {
-    const { 
-      limit = 50, 
-      offset = 0, 
-      category, 
-      active = 1,
-      sort = 'created_at',
-      order = 'DESC'
-    } = req.query;
-
-    let sql = `
-      SELECT d.*, c.name as category_name,
-             (SELECT COUNT(*) FROM favorites WHERE id_dish = d.id_dish) as favorite_count
-      FROM dishes d 
-      LEFT JOIN categories c ON d.id_category = c.id_category 
-      WHERE d.active = ?
-    `;
-    const params = [active];
-
-    if (category) {
-      sql += ' AND d.id_category = ?';
-      params.push(category);
-    }
-
-    sql += ` ORDER BY d.${sort} ${order} LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), parseInt(offset));
-
-    const dishes = await query(sql, params);
-
-    // Compter le total
-    let countSql = 'SELECT COUNT(*) as total FROM dishes WHERE active = ?';
-    const countParams = [active];
-    if (category) {
-      countSql += ' AND id_category = ?';
-      countParams.push(category);
-    }
-    const [{ total }] = await query(countSql, countParams);
+    const pool = req.app.locals.pool;
+    
+    const result = await pool.query(`
+      SELECT 
+        d.*,
+        c.name as category_name,
+        c.icon as category_icon
+      FROM dishes d
+      LEFT JOIN categories c ON d.category_id = c.id_category
+      WHERE d.is_available = true
+      ORDER BY c.display_order, d.name
+    `);
 
     res.json({
-      dishes,
-      total,
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+      success: true,
+      dishes: result.rows,
+      count: result.rows.length
     });
   } catch (error) {
-    console.error('Erreur get dishes:', error);
+    console.error('❌ Erreur GET /dishes:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// Récupérer un plat par ID
+// GET /dishes/:id - Récupérer un plat par ID
 router.get('/:id', async (req, res) => {
   try {
-    const dish = await queryOne(
-      `SELECT d.*, c.name as category_name,
-              (SELECT COUNT(*) FROM favorites WHERE id_dish = d.id_dish) as favorite_count
-       FROM dishes d 
-       LEFT JOIN categories c ON d.id_category = c.id_category 
-       WHERE d.id_dish = ?`,
-      [req.params.id]
-    );
+    const pool = req.app.locals.pool;
+    const { id } = req.params;
 
-    if (!dish) {
+    const result = await pool.query(`
+      SELECT 
+        d.*,
+        c.name as category_name,
+        c.icon as category_icon
+      FROM dishes d
+      LEFT JOIN categories c ON d.category_id = c.id_category
+      WHERE d.id_dish = $1
+    `, [id]);
+
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Plat non trouvé' });
     }
 
-    // Vérifier si l'utilisateur l'a en favori
-    if (req.session.userId) {
-      const favorite = await queryOne(
-        'SELECT * FROM favorites WHERE id_user = ? AND id_dish = ?',
-        [req.session.userId, dish.id_dish]
-      );
-      dish.is_favorite = !!favorite;
-    }
-
-    res.json(dish);
-  } catch (error) {
-    console.error('Erreur get dish:', error);
-    res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-// Rechercher des plats
-router.get('/search', async (req, res) => {
-  try {
-    const { q } = req.query;
-
-    if (!q || q.length < 2) {
-      return res.status(400).json({ error: 'Recherche trop courte' });
-    }
-
-    const searchTerm = `%${q}%`;
-    const dishes = await query(
-      `SELECT d.*, c.name as category_name
-       FROM dishes d 
-       LEFT JOIN categories c ON d.id_category = c.id_category 
-       WHERE d.active = 1 
-       AND (d.name LIKE ? OR d.description LIKE ?)
-       ORDER BY d.name ASC
-       LIMIT 20`,
-      [searchTerm, searchTerm]
-    );
-
-    res.json({ dishes, query: q });
-  } catch (error) {
-    console.error('Erreur search dishes:', error);
-    res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-// Créer un plat (admin uniquement)
-router.post('/', async (req, res) => {
-  try {
-    if (!req.session.userId || req.session.role !== 'admin') {
-      return res.status(403).json({ error: 'Accès refusé' });
-    }
-
-    const { name, description, price, id_category, allergens, image } = req.body;
-
-    if (!name || !price) {
-      return res.status(400).json({ error: 'Nom et prix requis' });
-    }
-
-    const result = await query(
-      `INSERT INTO dishes (name, description, price, id_category, allergens, image, active, created_at) 
-       VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
-      [name, description, price, id_category, allergens, image]
-    );
-
-    res.status(201).json({
-      message: 'Plat créé avec succès',
-      id_dish: result.insertId
+    res.json({
+      success: true,
+      dish: result.rows[0]
     });
   } catch (error) {
-    console.error('Erreur create dish:', error);
+    console.error('❌ Erreur GET /dishes/:id:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// Mettre à jour un plat (admin uniquement)
+// GET /dishes/search - Rechercher des plats
+router.get('/search', async (req, res) => {
+  try {
+    const pool = req.app.locals.pool;
+    const { q } = req.query;
+
+    if (!q) {
+      return res.status(400).json({ error: 'Paramètre de recherche requis' });
+    }
+
+    const result = await pool.query(`
+      SELECT 
+        d.*,
+        c.name as category_name,
+        c.icon as category_icon
+      FROM dishes d
+      LEFT JOIN categories c ON d.category_id = c.id_category
+      WHERE d.is_available = true
+        AND (
+          LOWER(d.name) LIKE LOWER($1)
+          OR LOWER(d.description) LIKE LOWER($1)
+        )
+      ORDER BY d.name
+    `, [`%${q}%`]);
+
+    res.json({
+      success: true,
+      dishes: result.rows,
+      count: result.rows.length
+    });
+  } catch (error) {
+    console.error('❌ Erreur GET /dishes/search:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// POST /dishes - Créer un plat (admin uniquement)
+router.post('/', async (req, res) => {
+  try {
+    const pool = req.app.locals.pool;
+
+    if (!req.session.userId || req.session.role !== 'admin') {
+      return res.status(403).json({ error: 'Accès refusé' });
+    }
+
+    const {
+      name,
+      description,
+      category_id,
+      price,
+      image_url,
+      allergens,
+      is_vegetarian,
+      is_vegan,
+      is_gluten_free,
+      course_type,
+      preparation_time,
+      calories
+    } = req.body;
+
+    if (!name || !category_id || !price) {
+      return res.status(400).json({ error: 'Champs requis manquants' });
+    }
+
+    const result = await pool.query(`
+      INSERT INTO dishes (
+        name, description, category_id, price, image_url,
+        allergens, is_vegetarian, is_vegan, is_gluten_free,
+        course_type, preparation_time, calories
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING *
+    `, [
+      name, description, category_id, price, image_url,
+      allergens, is_vegetarian, is_vegan, is_gluten_free,
+      course_type, preparation_time, calories
+    ]);
+
+    res.status(201).json({
+      success: true,
+      message: 'Plat créé avec succès',
+      dish: result.rows[0]
+    });
+  } catch (error) {
+    console.error('❌ Erreur POST /dishes:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// PUT /dishes/:id - Mettre à jour un plat (admin uniquement)
 router.put('/:id', async (req, res) => {
   try {
+    const pool = req.app.locals.pool;
+    const { id } = req.params;
+
     if (!req.session.userId || req.session.role !== 'admin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
-    const { name, description, price, id_category, allergens, image, active } = req.body;
+    const {
+      name,
+      description,
+      category_id,
+      price,
+      image_url,
+      allergens,
+      is_vegetarian,
+      is_vegan,
+      is_gluten_free,
+      course_type,
+      is_available,
+      preparation_time,
+      calories
+    } = req.body;
 
-    await query(
-      `UPDATE dishes 
-       SET name = ?, description = ?, price = ?, id_category = ?, 
-           allergens = ?, image = ?, active = ?
-       WHERE id_dish = ?`,
-      [name, description, price, id_category, allergens, image, active, req.params.id]
-    );
+    const result = await pool.query(`
+      UPDATE dishes SET
+        name = COALESCE($1, name),
+        description = COALESCE($2, description),
+        category_id = COALESCE($3, category_id),
+        price = COALESCE($4, price),
+        image_url = COALESCE($5, image_url),
+        allergens = COALESCE($6, allergens),
+        is_vegetarian = COALESCE($7, is_vegetarian),
+        is_vegan = COALESCE($8, is_vegan),
+        is_gluten_free = COALESCE($9, is_gluten_free),
+        course_type = COALESCE($10, course_type),
+        is_available = COALESCE($11, is_available),
+        preparation_time = COALESCE($12, preparation_time),
+        calories = COALESCE($13, calories),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id_dish = $14
+      RETURNING *
+    `, [
+      name, description, category_id, price, image_url,
+      allergens, is_vegetarian, is_vegan, is_gluten_free,
+      course_type, is_available, preparation_time, calories, id
+    ]);
 
-    res.json({ message: 'Plat mis à jour avec succès' });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Plat non trouvé' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Plat mis à jour avec succès',
+      dish: result.rows[0]
+    });
   } catch (error) {
-    console.error('Erreur update dish:', error);
+    console.error('❌ Erreur PUT /dishes/:id:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// Supprimer un plat (admin uniquement)
+// DELETE /dishes/:id - Supprimer un plat (admin uniquement)
 router.delete('/:id', async (req, res) => {
   try {
+    const pool = req.app.locals.pool;
+    const { id } = req.params;
+
     if (!req.session.userId || req.session.role !== 'admin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
-    await query('DELETE FROM dishes WHERE id_dish = ?', [req.params.id]);
+    const result = await pool.query(
+      'DELETE FROM dishes WHERE id_dish = $1 RETURNING id_dish',
+      [id]
+    );
 
-    res.json({ message: 'Plat supprimé avec succès' });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Plat non trouvé' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Plat supprimé avec succès'
+    });
   } catch (error) {
-    console.error('Erreur delete dish:', error);
+    console.error('❌ Erreur DELETE /dishes/:id:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });

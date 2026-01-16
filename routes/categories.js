@@ -1,153 +1,202 @@
-// backend/routes/categories.js
+// backend/routes/categories.js - VERSION CORRIGÉE POUR POSTGRESQL
 const express = require('express');
-const { query, queryOne } = require('../../database/db');
-
 const router = express.Router();
 
 // Récupérer toutes les catégories avec comptage de plats
 router.get('/', async (req, res) => {
+  const pool = req.app.locals.pool;
+  
   try {
     const { limit = 50 } = req.query;
 
-    const categories = await query(
-      `SELECT c.*, 
-              COUNT(CASE WHEN d.active = 1 THEN 1 END) as dish_count 
-       FROM categories c 
-       LEFT JOIN dishes d ON c.id_category = d.id_category 
-       GROUP BY c.id_category 
-       ORDER BY dish_count DESC 
-       LIMIT ?`,
-      [parseInt(limit)]
-    );
+    // ✅ CORRECTION: Syntaxe PostgreSQL avec $1 au lieu de ?
+    const result = await pool.query(`
+      SELECT 
+        c.*,
+        COUNT(CASE WHEN d.is_available = true THEN 1 END) as dish_count
+      FROM categories c
+      LEFT JOIN dishes d ON c.id_category = d.category_id
+      GROUP BY c.id_category
+      ORDER BY c.display_order ASC, dish_count DESC
+      LIMIT $1
+    `, [parseInt(limit)]);
 
-    const [{ total }] = await query('SELECT COUNT(*) as total FROM categories');
+    const totalResult = await pool.query('SELECT COUNT(*) as total FROM categories');
+    const total = parseInt(totalResult.rows[0].total);
 
     res.json({
-      categories,
+      success: true,
+      categories: result.rows,
       total
     });
   } catch (error) {
-    console.error('Erreur get categories:', error);
+    console.error('❌ Erreur GET /categories:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
 // Récupérer une catégorie par ID
 router.get('/:id', async (req, res) => {
+  const pool = req.app.locals.pool;
+  
   try {
-    const category = await queryOne(
-      `SELECT c.*, 
-              COUNT(CASE WHEN d.active = 1 THEN 1 END) as dish_count 
-       FROM categories c 
-       LEFT JOIN dishes d ON c.id_category = d.id_category 
-       WHERE c.id_category = ?
-       GROUP BY c.id_category`,
-      [req.params.id]
-    );
+    const result = await pool.query(`
+      SELECT 
+        c.*,
+        COUNT(CASE WHEN d.is_available = true THEN 1 END) as dish_count
+      FROM categories c
+      LEFT JOIN dishes d ON c.id_category = d.category_id
+      WHERE c.id_category = $1
+      GROUP BY c.id_category
+    `, [req.params.id]);
 
-    if (!category) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Catégorie non trouvée' });
     }
 
-    res.json(category);
+    res.json({
+      success: true,
+      category: result.rows[0]
+    });
   } catch (error) {
-    console.error('Erreur get category:', error);
+    console.error('❌ Erreur GET /categories/:id:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
 // Récupérer les plats d'une catégorie
 router.get('/:id/dishes', async (req, res) => {
+  const pool = req.app.locals.pool;
+  
   try {
-    const dishes = await query(
-      `SELECT d.*, c.name as category_name
-       FROM dishes d 
-       LEFT JOIN categories c ON d.id_category = c.id_category 
-       WHERE d.id_category = ? AND d.active = 1
-       ORDER BY d.name ASC`,
-      [req.params.id]
-    );
+    const result = await pool.query(`
+      SELECT 
+        d.*,
+        c.name as category_name,
+        c.icon as category_icon
+      FROM dishes d
+      LEFT JOIN categories c ON d.category_id = c.id_category
+      WHERE d.category_id = $1 AND d.is_available = true
+      ORDER BY d.name ASC
+    `, [req.params.id]);
 
-    res.json({ dishes });
+    res.json({ 
+      success: true,
+      dishes: result.rows 
+    });
   } catch (error) {
-    console.error('Erreur get dishes by category:', error);
+    console.error('❌ Erreur GET /categories/:id/dishes:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
 // Créer une catégorie (admin uniquement)
 router.post('/', async (req, res) => {
+  const pool = req.app.locals.pool;
+  
   try {
     if (!req.session.userId || req.session.role !== 'admin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
-    const { name, description } = req.body;
+    const { name, description, icon, display_order } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Nom requis' });
     }
 
-    const result = await query(
-      'INSERT INTO categories (name, description, created_at) VALUES (?, ?, NOW())',
-      [name, description]
-    );
+    const result = await pool.query(`
+      INSERT INTO categories (name, description, icon, display_order, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, NOW(), NOW())
+      RETURNING *
+    `, [name, description, icon || null, display_order || 0]);
 
     res.status(201).json({
+      success: true,
       message: 'Catégorie créée avec succès',
-      id_category: result.insertId
+      category: result.rows[0]
     });
   } catch (error) {
-    console.error('Erreur create category:', error);
+    console.error('❌ Erreur POST /categories:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
 // Mettre à jour une catégorie (admin uniquement)
 router.put('/:id', async (req, res) => {
+  const pool = req.app.locals.pool;
+  
   try {
     if (!req.session.userId || req.session.role !== 'admin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
-    const { name, description } = req.body;
+    const { name, description, icon, display_order, is_active } = req.body;
 
-    await query(
-      'UPDATE categories SET name = ?, description = ? WHERE id_category = ?',
-      [name, description, req.params.id]
-    );
+    const result = await pool.query(`
+      UPDATE categories 
+      SET 
+        name = COALESCE($1, name),
+        description = COALESCE($2, description),
+        icon = COALESCE($3, icon),
+        display_order = COALESCE($4, display_order),
+        is_active = COALESCE($5, is_active),
+        updated_at = NOW()
+      WHERE id_category = $6
+      RETURNING *
+    `, [name, description, icon, display_order, is_active, req.params.id]);
 
-    res.json({ message: 'Catégorie mise à jour avec succès' });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Catégorie non trouvée' });
+    }
+
+    res.json({ 
+      success: true,
+      message: 'Catégorie mise à jour avec succès',
+      category: result.rows[0]
+    });
   } catch (error) {
-    console.error('Erreur update category:', error);
+    console.error('❌ Erreur PUT /categories/:id:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
 // Supprimer une catégorie (admin uniquement)
 router.delete('/:id', async (req, res) => {
+  const pool = req.app.locals.pool;
+  
   try {
     if (!req.session.userId || req.session.role !== 'admin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
     // Vérifier si des plats utilisent cette catégorie
-    const [{ count }] = await query(
-      'SELECT COUNT(*) as count FROM dishes WHERE id_category = ?',
+    const dishCheck = await pool.query(
+      'SELECT COUNT(*) as count FROM dishes WHERE category_id = $1',
       [req.params.id]
     );
 
-    if (count > 0) {
+    if (parseInt(dishCheck.rows[0].count) > 0) {
       return res.status(400).json({ 
         error: 'Impossible de supprimer : des plats utilisent cette catégorie' 
       });
     }
 
-    await query('DELETE FROM categories WHERE id_category = ?', [req.params.id]);
+    const result = await pool.query(
+      'DELETE FROM categories WHERE id_category = $1 RETURNING *',
+      [req.params.id]
+    );
 
-    res.json({ message: 'Catégorie supprimée avec succès' });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Catégorie non trouvée' });
+    }
+
+    res.json({ 
+      success: true,
+      message: 'Catégorie supprimée avec succès' 
+    });
   } catch (error) {
-    console.error('Erreur delete category:', error);
+    console.error('❌ Erreur DELETE /categories/:id:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });

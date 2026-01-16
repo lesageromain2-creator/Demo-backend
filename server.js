@@ -16,6 +16,9 @@ const userRoutes = require('./routes/users');
 const reservationRoutes = require('./routes/reservations');
 const menusRoutes = require('./routes/menus');
 const dashboardRoutes = require('./routes/dashboard');
+const categoriesRoutes = require('./routes/categories'); // ✅ AJOUT
+const dishesRoutes = require('./routes/dishes');    
+const favoritesRoutes = require('./routes/favorites');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -249,6 +252,9 @@ app.use('/users', userRoutes);
 app.use('/reservations', reservationRoutes);
 app.use('/menus', menusRoutes);
 app.use('/dashboard', dashboardRoutes);
+app.use('/categories', categoriesRoutes); // ✅ AJOUT CRITIQUE
+app.use('/dishes', dishesRoutes);   
+app.use('/favorites', favoritesRoutes);
 
 // ============================================
 // GESTION DES ERREURS 404
@@ -268,7 +274,10 @@ app.use((req, res) => {
       'GET /users',
       'GET /reservations',
       'GET /menus',
-      'GET /dashboard'
+      'GET /dashboard',
+      'GET /categories', 
+      'GET /dishes',
+      'GET /favorites',
     ]
   });
 });
@@ -326,6 +335,10 @@ const server = app.listen(PORT, () => {
   console.log('  - *    /reservations');
   console.log('  - *    /menus');
   console.log('  - *    /dashboard');
+   console.log('  - *    /favorites');
+  console.log('  - *    /categories');  // ✅ AJOUT
+  console.log('  - *    /dishes');      // ✅ AJOUT
+  console.log('  - *    /favorites');
   console.log('');
 });
 

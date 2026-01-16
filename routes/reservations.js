@@ -364,3 +364,57 @@ router.put('/:id/confirm', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+// ============================================
+// 1. BACKEND: routes/reservations.js
+// Ajouter cette route DELETE
+// ============================================
+
+// DELETE /reservations/:id - Supprimer une réservation (utilisateur ou admin)
+router.delete('/:id', async (req, res) => {
+  try {
+    const pool = req.app.locals.pool;
+    const { id } = req.params;
+
+    if (!req.session.userId) {
+      return res.status(401).json({ error: 'Non authentifié' });
+    }
+
+    // Vérifier que la réservation existe et appartient à l'utilisateur
+    // Ou que l'utilisateur est admin
+    const checkQuery = `
+      SELECT * FROM reservations 
+      WHERE id = $1 
+      AND (user_id = $2 OR EXISTS (
+        SELECT 1 FROM users WHERE id = $2 AND role = 'admin'
+      ))
+    `;
+
+    const checkResult = await pool.query(checkQuery, [id, req.session.userId]);
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Réservation non trouvée ou accès non autorisé' 
+      });
+    }
+
+    // Supprimer la réservation
+    const deleteQuery = 'DELETE FROM reservations WHERE id = $1 RETURNING *';
+    const result = await pool.query(deleteQuery, [id]);
+
+    res.json({
+      success: true,
+      message: 'Réservation supprimée avec succès',
+      reservation: result.rows[0]
+    });
+  } catch (error) {
+    console.error('❌ Erreur DELETE /reservations/:id:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Erreur serveur' 
+    });
+  }
+});
