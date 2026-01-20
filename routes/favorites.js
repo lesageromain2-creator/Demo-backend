@@ -162,6 +162,12 @@ router.get('/count', requireAuth, async (req, res) => {
       count: parseInt(result.rows[0].count)
     });
   } catch (error) {
+    // Si la table favorites n'existe pas (nouveau schéma), ne pas casser le dashboard.
+    // Postgres: 42P01 = undefined_table
+    if (error && error.code === '42P01') {
+      console.warn('⚠️ Table "favorites" absente. Retour count=0.');
+      return res.json({ success: true, count: 0 });
+    }
     console.error('❌ Erreur GET /favorites/count:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }

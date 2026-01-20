@@ -168,7 +168,7 @@ router.post('/register', async (req, res) => {
         lastname.trim(),
         email.toLowerCase(),
         passwordHash,
-        'user'
+        'client' // rôle par défaut conforme au CHECK de la table users
       ]
     );
     
