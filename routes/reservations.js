@@ -2,6 +2,14 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth, requireAdmin } = require('../middleware/auths');
+const { getPool } = require('../database/db');
+
+// 🔥 IMPORT DES HELPERS EMAILS
+const { 
+  sendReservationCreatedEmail,
+  sendReservationConfirmedEmail,
+  sendReservationCancelledEmail
+} = require('../utils/emailHelpers');
 
 // Helper pour exécuter des requêtes
 const query = async (pool, sql, params = []) => {
@@ -123,6 +131,26 @@ router.post('/', requireAuth, async (req, res) => {
     );
 
     console.log('✅ Rendez-vous créé:', result[0]);
+
+    // Récupérer les infos utilisateur pour l'email
+    const userResult = await queryOne(pool,
+      'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult) {
+      console.log('📧 Envoi email confirmation à:', userResult.email);
+      
+      // 🔥 ENVOYER EMAIL DE CONFIRMATION CLIENT
+      sendReservationCreatedEmail(result[0], userResult).catch(err => {
+        console.error('❌ Erreur envoi email réservation:', err);
+        // On ne bloque pas la réponse si l'email échoue
+      });
+
+      console.log('✅ Email de réservation envoyé à:', userResult.email);
+    } else {
+      console.warn('⚠️ Utilisateur non trouvé pour envoi email');
+    }
 
     res.status(201).json({
       success: true,
@@ -254,48 +282,6 @@ router.put('/:id/cancel', requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur cancel reservation:', error);
-    res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-// ============================================
-// SUPPRIMER UNE RÉSERVATION (JWT AUTH)
-// ============================================
-router.delete('/:id', requireAuth, async (req, res) => {
-  const pool = req.app.locals.pool;
-  const userId = req.userId; // ✅ JWT
-  const userRole = req.userRole; // ✅ JWT
-  const { id } = req.params;
-
-  try {
-    // Vérifier propriétaire ou admin
-    const checkQuery = `
-      SELECT * FROM reservations 
-      WHERE id = $1 
-      AND (user_id = $2 OR $3 = 'admin')
-    `;
-    const checkResult = await query(pool, checkQuery, [id, userId, userRole]);
-
-    if (checkResult.length === 0) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Réservation non trouvée ou accès non autorisé' 
-      });
-    }
-
-    // Supprimer
-    const result = await query(pool,
-      'DELETE FROM reservations WHERE id = $1 RETURNING *',
-      [id]
-    );
-
-    res.json({
-      success: true,
-      message: 'Réservation supprimée avec succès',
-      reservation: result[0]
-    });
-  } catch (error) {
-    console.error('❌ Erreur DELETE /reservations/:id:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });

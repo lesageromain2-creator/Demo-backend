@@ -6,6 +6,8 @@ const { getPool } = require('../../database/db');
 
 router.use(requireAuth, requireAdmin);
 
+
+
 // ============================================
 // GET /admin/projects - Liste tous les projets
 // ============================================
@@ -888,3 +890,89 @@ router.post('/:id/files', async (req, res) => {
       res.status(500).json({ error: 'Erreur serveur' });
     }
   });
+
+  // ============================================
+// EXEMPLE 4 : backend/routes/admin/projects.js
+// Mise à jour projet avec email
+// ============================================
+
+
+
+const { 
+  sendProjectCreatedEmail,
+  sendProjectUpdateEmail 
+} = require('../../utils/emailHelpers');
+
+router.use(requireAuth, requireAdmin);
+
+/**
+ * POST /admin/projects/:id/update-message
+ * Envoyer une mise à jour au client
+ */
+router.post('/:id/update-message', async (req, res) => {
+  const pool = getPool();
+  const { id } = req.params;
+  const { title, message, update_type } = req.body;
+
+  try {
+    // Récupérer le projet
+    const projectResult = await pool.query(
+      'SELECT * FROM client_projects WHERE id = $1',
+      [id]
+    );
+
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Projet non trouvé' });
+    }
+
+    const project = projectResult.rows[0];
+
+    // Créer l'update en BDD
+    const updateResult = await pool.query(`
+      INSERT INTO project_updates (project_id, created_by, title, message, update_type)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+    `, [id, req.userId, title, message, update_type || 'info']);
+
+    const update = updateResult.rows[0];
+
+    // Récupérer infos client
+    const userResult = await pool.query(
+      'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+      [project.user_id]
+    );
+
+    if (userResult.rows.length > 0) {
+      const user = userResult.rows[0];
+
+      // 🔥 ENVOYER EMAIL DE MISE À JOUR
+      sendProjectUpdateEmail(project, user, update).catch(err => {
+        console.error('Erreur envoi email update projet:', err);
+      });
+
+      // Créer notification
+      await pool.query(`
+        INSERT INTO user_notifications (user_id, title, message, type, related_type, related_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        user.id,
+        title,
+        message,
+        'info',
+        'project',
+        project.id
+      ]);
+    }
+
+    res.json({
+      message: 'Mise à jour envoyée',
+      update
+    });
+
+  } catch (error) {
+    console.error('Erreur envoi update projet:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+module.exports = router;

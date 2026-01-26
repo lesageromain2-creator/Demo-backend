@@ -6,6 +6,8 @@ const { getPool } = require('../../database/db');
 
 router.use(requireAuth, requireAdmin);
 
+
+
 // ============================================
 // ROUTES SPÉCIFIQUES (DOIVENT ÊTRE AVANT /:id)
 // ============================================
@@ -485,5 +487,108 @@ router.delete('/:id', async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
+
+
+
+
+
+// ============================================
+// EXEMPLE 3 : backend/routes/admin/reservations.js
+// Confirmation admin avec email
+// ============================================
+
+
+const { 
+  sendReservationConfirmedEmail 
+} = require('../../utils/emailHelpers');
+
+router.use(requireAuth, requireAdmin);
+
+/**
+ * PUT /admin/reservations/:id
+ * Confirmer une réservation (admin)
+ */
+router.put('/:id', async (req, res) => {
+  const pool = getPool();
+  const { id } = req.params;
+  const { status, meeting_link } = req.body;
+
+  try {
+    // Mettre à jour la réservation
+    const result = await pool.query(`
+      UPDATE reservations 
+      SET status = $1,
+          meeting_link = $2,
+          confirmed_by = $3,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $4
+      RETURNING *
+    `, [status, meeting_link, req.userId, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Réservation non trouvée' });
+    }
+
+    const reservation = result.rows[0];
+
+    // Si confirmée, envoyer email au client
+    if (status === 'confirmed') {
+      // Récupérer infos utilisateur
+      const userResult = await pool.query(
+        'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+        [reservation.user_id]
+      );
+
+      if (userResult.rows.length > 0) {
+        const user = userResult.rows[0];
+
+        // 🔥 ENVOYER EMAIL DE CONFIRMATION
+        sendReservationConfirmedEmail({
+          ...reservation,
+          meeting_link
+        }, user).catch(err => {
+          console.error('Erreur envoi email confirmation admin:', err);
+        });
+
+        // Créer notification utilisateur
+        await pool.query(`
+          INSERT INTO user_notifications (user_id, title, message, type, related_type, related_id)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `, [
+          user.id,
+          'Rendez-vous confirmé',
+          `Votre rendez-vous du ${reservation.reservation_date} a été confirmé`,
+          'success',
+          'reservation',
+          reservation.id
+        ]);
+      }
+    }
+
+    // Log admin activity
+    await pool.query(`
+      INSERT INTO admin_activity_logs (admin_id, action, entity_type, entity_id, description)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [
+      req.userId,
+      'update',
+      'reservation',
+      id,
+      `Réservation ${status === 'confirmed' ? 'confirmée' : 'mise à jour'}`
+    ]);
+
+    res.json({
+      message: 'Réservation mise à jour',
+      reservation
+    });
+
+  } catch (error) {
+    console.error('Erreur update réservation admin:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+
 
 module.exports = router;

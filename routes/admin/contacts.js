@@ -7,6 +7,10 @@ const { getPool } = require('../../database/db');
 // Middleware helper pour toutes les routes admin
 const adminOnly = [requireAuth, requireAdmin];
 
+
+// 🔥 IMPORT DES HELPERS EMAILS
+const { sendContactReplyEmail } = require('../../utils/emailHelpers');
+
 // ============================================
 // GET /admin/contact/stats/overview - Statistiques messages
 // ⚠️ DOIT ÊTRE AVANT /:id SINON 'stats' SERA INTERPRÉTÉ COMME UN ID
@@ -373,5 +377,275 @@ router.delete('/:id', adminOnly, async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
+////////////////////////////////////////////////////////////////
+// backend/routes/admin/contacts.js - AVEC EMAIL RÉPONSE
+
+
+// Middleware admin requis pour toutes les routes
+router.use(requireAuth, requireAdmin);
+
+// ============================================
+// POST /admin/contact/:id/reply - RÉPONDRE AVEC EMAIL
+// ============================================
+router.post('/:id/reply', async (req, res) => {
+  const pool = getPool();
+  const { id } = req.params;
+  const { reply_text } = req.body;
+  const adminId = req.userId;
+
+  try {
+    // Validation
+    if (!reply_text || reply_text.trim() === '') {
+      return res.status(400).json({ 
+        error: 'Le texte de la réponse est requis' 
+      });
+    }
+
+    // Vérifier que le message existe
+    const messageResult = await pool.query(
+      'SELECT * FROM contact_messages WHERE id = $1',
+      [id]
+    );
+
+    if (messageResult.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Message non trouvé' 
+      });
+    }
+
+    const message = messageResult.rows[0];
+
+    // Créer la réponse en BDD
+    const replyResult = await pool.query(`
+      INSERT INTO contact_message_replies (message_id, admin_id, reply_text)
+      VALUES ($1, $2, $3)
+      RETURNING *
+    `, [id, adminId, reply_text]);
+
+    const reply = replyResult.rows[0];
+
+    // Mettre à jour le message (marqué comme répondu)
+    await pool.query(`
+      UPDATE contact_messages 
+      SET replied_at = CURRENT_TIMESTAMP,
+          replied_by = $1,
+          status = 'replied'
+      WHERE id = $2
+    `, [adminId, id]);
+
+    // Récupérer infos admin
+    const adminResult = await pool.query(
+      'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+      [adminId]
+    );
+    const admin = adminResult.rows[0];
+
+    // 🔥 ENVOYER EMAIL AU CLIENT
+    sendContactReplyEmail(message, reply, admin).catch(err => {
+      console.error('❌ Erreur envoi email réponse:', err);
+    });
+
+    // Log activité admin
+    await pool.query(`
+      INSERT INTO admin_activity_logs (admin_id, action, entity_type, entity_id, description)
+      VALUES ($1, 'reply', 'contact_message', $2, $3)
+    `, [
+      adminId,
+      id,
+      `Réponse envoyée au message de ${message.name}`
+    ]);
+
+    console.log('✅ Réponse envoyée au message:', id);
+
+    res.json({
+      message: 'Réponse envoyée avec succès',
+      reply
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur réponse message:', error);
+    res.status(500).json({ 
+      error: 'Erreur serveur' 
+    });
+  }
+});
+
+// ============================================
+// GET /admin/contact - LISTE DES MESSAGES
+// ============================================
+router.get('/', async (req, res) => {
+  const pool = getPool();
+  const { status, search, limit = 50, offset = 0 } = req.query;
+
+  try {
+    let query = `
+      SELECT 
+        cm.*,
+        (SELECT COUNT(*) FROM contact_message_replies WHERE message_id = cm.id) as replies_count,
+        u.firstname as replied_by_firstname,
+        u.lastname as replied_by_lastname
+      FROM contact_messages cm
+      LEFT JOIN users u ON cm.replied_by = u.id
+      WHERE 1=1
+    `;
+
+    const params = [];
+    let paramCount = 1;
+
+    if (status) {
+      query += ` AND cm.status = $${paramCount}`;
+      params.push(status);
+      paramCount++;
+    }
+
+    if (search) {
+      query += ` AND (cm.name ILIKE $${paramCount} OR cm.email ILIKE $${paramCount} OR cm.subject ILIKE $${paramCount})`;
+      params.push(`%${search}%`);
+      paramCount++;
+    }
+
+    query += ` ORDER BY cm.created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      messages: result.rows,
+      total: result.rows.length
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur récupération messages:', error);
+    res.status(500).json({ 
+      error: 'Erreur serveur' 
+    });
+  }
+});
+
+// ============================================
+// GET /admin/contact/:id - DÉTAILS MESSAGE + RÉPONSES
+// ============================================
+router.get('/:id', async (req, res) => {
+  const pool = getPool();
+  const { id } = req.params;
+
+  try {
+    // Message
+    const messageResult = await pool.query(
+      'SELECT * FROM contact_messages WHERE id = $1',
+      [id]
+    );
+
+    if (messageResult.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Message non trouvé' 
+      });
+    }
+
+    // Réponses
+    const repliesResult = await pool.query(`
+      SELECT 
+        cmr.*,
+        u.firstname,
+        u.lastname,
+        u.email
+      FROM contact_message_replies cmr
+      JOIN users u ON cmr.admin_id = u.id
+      WHERE cmr.message_id = $1
+      ORDER BY cmr.created_at ASC
+    `, [id]);
+
+    res.json({
+      message: messageResult.rows[0],
+      replies: repliesResult.rows
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur récupération message:', error);
+    res.status(500).json({ 
+      error: 'Erreur serveur' 
+    });
+  }
+});
+
+// ============================================
+// PUT /admin/contact/:id - METTRE À JOUR STATUT
+// ============================================
+router.put('/:id', async (req, res) => {
+  const pool = getPool();
+  const { id } = req.params;
+  const { status, priority, assigned_to } = req.body;
+
+  try {
+    const result = await pool.query(`
+      UPDATE contact_messages
+      SET status = COALESCE($1, status),
+          priority = COALESCE($2, priority),
+          assigned_to = COALESCE($3, assigned_to)
+      WHERE id = $4
+      RETURNING *
+    `, [status, priority, assigned_to, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Message non trouvé' 
+      });
+    }
+
+    res.json({
+      message: 'Message mis à jour',
+      data: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur mise à jour message:', error);
+    res.status(500).json({ 
+      error: 'Erreur serveur' 
+    });
+  }
+});
+
+// ============================================
+// DELETE /admin/contact/:id - SUPPRIMER MESSAGE
+// ============================================
+router.delete('/:id', async (req, res) => {
+  const pool = getPool();
+  const { id } = req.params;
+
+  try {
+    // Supprimer les réponses d'abord (FK constraint)
+    await pool.query(
+      'DELETE FROM contact_message_replies WHERE message_id = $1',
+      [id]
+    );
+
+    // Supprimer le message
+    const result = await pool.query(
+      'DELETE FROM contact_messages WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Message non trouvé' 
+      });
+    }
+
+    console.log('✅ Message supprimé:', id);
+
+    res.json({
+      message: 'Message supprimé avec succès'
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur suppression message:', error);
+    res.status(500).json({ 
+      error: 'Erreur serveur' 
+    });
+  }
+});
+
+module.exports = router;
 
 module.exports = router;
