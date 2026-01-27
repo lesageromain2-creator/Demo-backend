@@ -6,6 +6,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { initPool } = require('./database/db');
+const { initEmailService, isEmailConfigured } = require('./services/emailService');
 
 // Import des routes
 // Import des routes
@@ -145,6 +146,7 @@ const pool = new Pool(poolConfig);
 
 initPool(pool);
 app.locals.pool = pool;
+initEmailService();
 
 // Test de connexion initial avec retry amélioré
 const testConnection = async (retries = 5) => {
@@ -329,6 +331,10 @@ app.get('/health', async (req, res) => {
         idle: pool.idleCount,
         waiting: pool.waitingCount
       }
+    },
+    email: {
+      configured: isEmailConfigured(),
+      provider: process.env.EMAIL_PROVIDER || 'smtp'
     }
   });
 });

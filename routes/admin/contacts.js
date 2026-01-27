@@ -246,10 +246,11 @@ router.post('/:id/reply', adminOnly, async (req, res) => {
         return res.status(400).json({ error: 'La réponse ne peut pas être vide' });
       }
   
-      // Récupérer les infos du message
-      const messageResult = await pool.query(`
-        SELECT id, name, email, subject FROM contact_messages WHERE id = $1
-      `, [id]);
+      // Récupérer les infos du message (message.body pour email)
+      const messageResult = await pool.query(
+        'SELECT * FROM contact_messages WHERE id = $1',
+        [id]
+      );
   
       if (messageResult.rows.length === 0) {
         return res.status(404).json({ error: 'Message non trouvé' });
@@ -314,23 +315,22 @@ router.post('/:id/reply', adminOnly, async (req, res) => {
         console.warn('⚠️ Impossible de logger:', logError.message);
       }
   
-      // ✅ NOUVEAU: Envoyer l'email au client
+      // Envoyer l'email au client (sendContactReplyEmail)
       try {
-        const emailResult = await sendContactReply(
-          message.email,
-          message.name,
-          message.subject,
-          reply_text
+        const reply = replyResult.rows[0];
+        const adminResult = await pool.query(
+          'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+          [req.userId]
         );
-  
-        if (emailResult.success) {
+        const admin = adminResult.rows[0] || null;
+        const emailResult = await sendContactReplyEmail(message, reply, admin);
+        if (emailResult?.success) {
           console.log('✅ Email de réponse envoyé à:', message.email);
         } else {
-          console.error('❌ Échec envoi email:', emailResult.error);
+          console.error('❌ Échec envoi email:', emailResult?.error || 'inconnu');
         }
       } catch (emailError) {
         console.error('❌ Erreur lors de l\'envoi de l\'email:', emailError);
-        // On ne fait pas échouer la requête si l'email échoue
       }
   
       res.json({
