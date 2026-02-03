@@ -45,6 +45,7 @@ const projectFilesRouter = require('./routes/projectFiles');
 const paymentsRoutes = require('./routes/payments');
 const webhooksRoutes = require('./routes/webhooks');
 const chatRoutes = require('./routes/chat');
+const hotelRoutes = require('./routes/hotel');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -438,6 +439,7 @@ app.use('/projects', projectFilesRouter);
 app.use('/messages', messagesRoutes);
 app.use('/payments', paymentsRoutes);
 app.use('/chat', chatRoutes);
+app.use('/hotel', hotelRoutes);
 
 // ============================================
 // ROUTES ADMIN

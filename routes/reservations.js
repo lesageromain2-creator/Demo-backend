@@ -168,6 +168,7 @@ router.post('/', requireAuth, async (req, res) => {
 
 // ============================================
 // RÉCUPÉRER LES RÉSERVATIONS DE L'UTILISATEUR (JWT AUTH)
+// Supporte room_reservations (hôtel) et reservations (rendez-vous) si les tables existent
 // ============================================
 router.get('/my', requireAuth, async (req, res) => {
   const pool = req.app.locals.pool;
@@ -176,12 +177,39 @@ router.get('/my', requireAuth, async (req, res) => {
   try {
     console.log('📋 Récupération réservations pour user:', userId);
     
-    const reservations = await query(pool,
-      `SELECT * FROM reservations 
-       WHERE user_id = $1 
-       ORDER BY reservation_date DESC, reservation_time DESC`,
-      [userId]
-    );
+    // Priorité : room_reservations (réservations chambres hôtel) - table principale du projet
+    let reservations = [];
+    try {
+      const rows = await query(pool,
+        `SELECT r.*, rt.name as room_type_name, rt.slug as room_type_slug
+         FROM room_reservations r
+         LEFT JOIN room_types rt ON r.room_type_id = rt.id
+         WHERE r.user_id = $1
+         ORDER BY r.check_in_date DESC`,
+        [userId]
+      );
+      // Adapter au format attendu par le dashboard (reservation_date, reservation_time)
+      reservations = rows.map(r => ({
+        ...r,
+        reservation_date: r.check_in_date,
+        reservation_time: '14:00',
+        meeting_type: 'chambre',
+        project_type: r.room_type_name || 'Chambre'
+      }));
+    } catch (roomErr) {
+      // Fallback : table reservations (rendez-vous consultation) si room_reservations n'existe pas
+      if (roomErr.code === '42P01') {
+        const rows = await query(pool,
+          `SELECT * FROM reservations 
+           WHERE user_id = $1 
+           ORDER BY reservation_date DESC, reservation_time DESC`,
+          [userId]
+        );
+        reservations = rows;
+      } else {
+        throw roomErr;
+      }
+    }
 
     console.log(`✅ ${reservations.length} réservations trouvées`);
 
@@ -200,6 +228,7 @@ router.get('/my', requireAuth, async (req, res) => {
 
 // ============================================
 // RÉCUPÉRER UNE RÉSERVATION PAR ID (JWT AUTH)
+// Supporte room_reservations (hôtel) et reservations (rendez-vous)
 // ============================================
 router.get('/:id', requireAuth, async (req, res) => {
   const pool = req.app.locals.pool;
@@ -207,19 +236,48 @@ router.get('/:id', requireAuth, async (req, res) => {
   const userRole = req.userRole; // ✅ JWT
   
   try {
-    const reservation = await queryOne(pool,
-      `SELECT r.*, u.firstname, u.lastname, u.email, u.phone
-       FROM reservations r
-       JOIN users u ON r.user_id = u.id
-       WHERE r.id = $1`,
-      [req.params.id]
-    );
+    // Essayer room_reservations d'abord (hôtel)
+    let reservation = null;
+    try {
+      reservation = await queryOne(pool,
+        `SELECT r.*, rt.name as room_type_name, rt.slug as room_type_slug, rt.image_url as room_type_image
+         FROM room_reservations r
+         LEFT JOIN room_types rt ON r.room_type_id = rt.id
+         WHERE r.id = $1`,
+        [req.params.id]
+      );
+    } catch (e) {
+      if (e.code !== '42P01') throw e;
+    }
+
+    if (reservation) {
+      if (reservation.user_id !== userId && userRole !== 'admin') {
+        return res.status(403).json({ error: 'Accès refusé' });
+      }
+      return res.json({
+        success: true,
+        reservation: { ...reservation, reservation_date: reservation.check_in_date, reservation_time: '14:00' }
+      });
+    }
+
+    // Fallback: reservations (rendez-vous)
+    try {
+      reservation = await queryOne(pool,
+        `SELECT r.*, u.firstname, u.lastname, u.email, u.phone
+         FROM reservations r
+         LEFT JOIN users u ON r.user_id = u.id
+         WHERE r.id = $1`,
+        [req.params.id]
+      );
+    } catch (e) {
+      if (e.code === '42P01') return res.status(404).json({ error: 'Réservation non trouvée' });
+      throw e;
+    }
 
     if (!reservation) {
       return res.status(404).json({ error: 'Réservation non trouvée' });
     }
 
-    // Vérifier propriétaire ou admin
     if (reservation.user_id !== userId && userRole !== 'admin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
@@ -229,6 +287,9 @@ router.get('/:id', requireAuth, async (req, res) => {
       reservation
     });
   } catch (error) {
+    if (error.code === '42P01') {
+      return res.status(404).json({ error: 'Réservation non trouvée' });
+    }
     console.error('❌ Erreur get reservation:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -236,16 +297,32 @@ router.get('/:id', requireAuth, async (req, res) => {
 
 // ============================================
 // SUPPRIMER UNE RÉSERVATION (JWT AUTH - propriétaire uniquement)
+// Supporte room_reservations et reservations
 // ============================================
 router.delete('/:id', requireAuth, async (req, res) => {
   const pool = req.app.locals.pool;
   const userId = req.userId;
 
   try {
-    const reservation = await queryOne(pool,
-      'SELECT * FROM reservations WHERE id = $1',
+    // Essayer room_reservations d'abord
+    let reservation = await queryOne(pool,
+      'SELECT * FROM room_reservations WHERE id = $1',
       [req.params.id]
     );
+    let table = 'room_reservations';
+
+    if (!reservation) {
+      try {
+        reservation = await queryOne(pool,
+          'SELECT * FROM reservations WHERE id = $1',
+          [req.params.id]
+        );
+        table = 'reservations';
+      } catch (e) {
+        if (e.code === '42P01') return res.status(404).json({ error: 'Réservation non trouvée' });
+        throw e;
+      }
+    }
 
     if (!reservation) {
       return res.status(404).json({ error: 'Réservation non trouvée' });
@@ -255,13 +332,16 @@ router.delete('/:id', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres réservations' });
     }
 
-    await pool.query('DELETE FROM reservations WHERE id = $1', [req.params.id]);
+    await pool.query(`DELETE FROM ${table} WHERE id = $1`, [req.params.id]);
 
     res.json({
       success: true,
       message: 'Réservation supprimée avec succès'
     });
   } catch (error) {
+    if (error.code === '42P01') {
+      return res.status(404).json({ error: 'Réservation non trouvée' });
+    }
     console.error('Erreur suppression réservation:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -269,6 +349,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
 
 // ============================================
 // ANNULER UNE RÉSERVATION (JWT AUTH)
+// Supporte room_reservations et reservations
 // ============================================
 router.put('/:id/cancel', requireAuth, async (req, res) => {
   const pool = req.app.locals.pool;
@@ -276,16 +357,30 @@ router.put('/:id/cancel', requireAuth, async (req, res) => {
   const userRole = req.userRole; // ✅ JWT
   
   try {
-    const reservation = await queryOne(pool,
-      'SELECT * FROM reservations WHERE id = $1',
+    // Essayer room_reservations d'abord
+    let reservation = await queryOne(pool,
+      'SELECT * FROM room_reservations WHERE id = $1',
       [req.params.id]
     );
+    let table = 'room_reservations';
+
+    if (!reservation) {
+      try {
+        reservation = await queryOne(pool,
+          'SELECT * FROM reservations WHERE id = $1',
+          [req.params.id]
+        );
+        table = 'reservations';
+      } catch (e) {
+        if (e.code === '42P01') return res.status(404).json({ error: 'Réservation non trouvée' });
+        throw e;
+      }
+    }
 
     if (!reservation) {
       return res.status(404).json({ error: 'Réservation non trouvée' });
     }
 
-    // Vérifier propriétaire ou admin
     if (reservation.user_id !== userId && userRole !== 'admin') {
       return res.status(403).json({ error: 'Accès refusé' });
     }
@@ -294,8 +389,10 @@ router.put('/:id/cancel', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Réservation déjà annulée' });
     }
 
-    // Vérifier 2h avant
-    const reservationDateTime = new Date(`${reservation.reservation_date}T${reservation.reservation_time}`);
+    // Vérifier 2h avant (pour rendez-vous) ou date check-in (pour chambres)
+    const resDate = reservation.check_in_date || reservation.reservation_date;
+    const resTime = reservation.reservation_time || '14:00';
+    const reservationDateTime = new Date(`${resDate}T${resTime}`);
     const twoHoursFromNow = new Date(Date.now() + 2 * 60 * 60 * 1000);
 
     if (reservationDateTime < twoHoursFromNow) {
@@ -304,8 +401,10 @@ router.put('/:id/cancel', requireAuth, async (req, res) => {
       });
     }
 
-    await query(pool,
-      'UPDATE reservations SET status = $1, cancelled_at = CURRENT_TIMESTAMP WHERE id = $2',
+    await pool.query(
+      table === 'room_reservations'
+        ? 'UPDATE room_reservations SET status = $1, cancelled_at = CURRENT_TIMESTAMP WHERE id = $2'
+        : 'UPDATE reservations SET status = $1, cancelled_at = CURRENT_TIMESTAMP WHERE id = $2',
       ['cancelled', req.params.id]
     );
 
@@ -314,6 +413,9 @@ router.put('/:id/cancel', requireAuth, async (req, res) => {
       message: 'Réservation annulée avec succès' 
     });
   } catch (error) {
+    if (error.code === '42P01') {
+      return res.status(404).json({ error: 'Réservation non trouvée' });
+    }
     console.error('❌ Erreur cancel reservation:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
