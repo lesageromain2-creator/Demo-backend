@@ -41,7 +41,9 @@ export const contacts = pgTable(
     read: boolean("read").default(false),
     created_at: created_at(),
   },
-  (t) => [index("idx_contacts_site").on(t.siteId)]
+  (t) => ({
+    idxContactsSite: index("idx_contacts_site").on(t.siteId),
+  })
 );
 
 export const bookings = pgTable(
@@ -61,10 +63,10 @@ export const bookings = pgTable(
     stripeSessionId: text("stripe_session_id"),
     created_at: created_at(),
   },
-  (t) => [
-    index("idx_bookings_site").on(t.siteId),
-    index("idx_bookings_date").on(t.date),
-  ]
+  (t) => ({
+    idxBookingsSite: index("idx_bookings_site").on(t.siteId),
+    idxBookingsDate: index("idx_bookings_date").on(t.date),
+  })
 );
 
 export const products = pgTable(
@@ -87,10 +89,10 @@ export const products = pgTable(
     metadata: jsonb("metadata").default({}),
     created_at: created_at(),
   },
-  (t) => [
-    index("idx_products_site").on(t.siteId),
-    index("idx_products_active").on(t.siteId, t.active),
-  ]
+  (t) => ({
+    idxProductsSite: index("idx_products_site").on(t.siteId),
+    idxProductsActive: index("idx_products_active").on(t.siteId, t.active),
+  })
 );
 
 export const orders = pgTable(
@@ -109,7 +111,9 @@ export const orders = pgTable(
     notes: text("notes"),
     created_at: created_at(),
   },
-  (t) => [index("idx_orders_site").on(t.siteId)]
+  (t) => ({
+    idxOrdersSite: index("idx_orders_site").on(t.siteId),
+  })
 );
 
 export const orderItems = pgTable("order_items", {
@@ -166,10 +170,10 @@ export const events = pgTable(
     metadata: jsonb("metadata").default({}),
     created_at: created_at(),
   },
-  (t) => [
-    index("idx_events_site").on(t.siteId),
-    index("idx_events_date").on(t.date),
-  ]
+  (t) => ({
+    idxEventsSite: index("idx_events_site").on(t.siteId),
+    idxEventsDate: index("idx_events_date").on(t.date),
+  })
 );
 
 export const reviews = pgTable(
@@ -186,7 +190,9 @@ export const reviews = pgTable(
     approved: boolean("approved").default(true),
     created_at: created_at(),
   },
-  (t) => [index("idx_reviews_site").on(t.siteId)]
+  (t) => ({
+    idxReviewsSite: index("idx_reviews_site").on(t.siteId),
+  })
 );
 
 export const subscribers = pgTable("subscribers", {
@@ -211,6 +217,8 @@ export const posts = pgTable(
     publishedAt: timestamp("published_at", { withTimezone: true }),
     created_at: created_at(),
   },
-  (t) => [index("idx_posts_site").on(t.siteId)]
+  (t) => ({
+    idxPostsSite: index("idx_posts_site").on(t.siteId),
+  })
 );
 
